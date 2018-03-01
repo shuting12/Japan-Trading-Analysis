@@ -1,0 +1,1 @@
+# Japan-Trading-Analysis
