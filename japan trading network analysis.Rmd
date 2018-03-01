@@ -1,0 +1,442 @@
+---
+title: "Japan trading network analysis"
+output: html_notebook
+---
+
+1. install packages 
+```{r}
+
+library(readr)
+library(RSQLite)
+library(class)
+library(igraph)
+library(dplyr)
+library(reshape2)
+
+```
+
+#### import data
+
+```{r Import data, echo=TRUE}
+ym_2017 <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/ym_latest.csv")
+country <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/country_eng.csv")
+hs2 <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/hs2_eng.csv")
+
+year_1988_2015 <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/year_1988_2015.csv")
+
+con = dbConnect(SQLite(), "C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/ym_2016.db", synchronous="off")
+ 
+dbListTables(con)
+myQuery <- dbSendQuery(con, "SELECT * FROM ym_2016")
+my_data <- dbFetch(myQuery, n = -1)  # fetch all data use n=-1 otherwise return 500 lines 
+dbClearResult(myQuery)
+dbDisconnect(con)
+# save as csv
+write.csv(my_data, file="C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/ym_2016.csv")
+
+ym_2016 <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/ym_2016.csv")
+```
+
+##### data cleaning & subseting
+```{r data aggragation/cleaning}
+# clean data 
+
+ym_2017 <- ym_2017[,-c(10:12)]# get rid of hs4/6/9
+ym_2017[is.na(ym_2017)] <- 0    # replace NA --> 0
+head(ym_2017)
+
+ym_2016 <- ym_2016[,-c(1,2,12,13,14)]
+ym_2016[is.na(ym_2016)] <- 0  
+head(ym_2016)
+
+year_1988_2015 <- year_1988_2015[,-c(10:12)]
+year_1988_2015[is.na(year_1988_2015)] <-0
+head(year_1988_2015)
+
+
+ym_2017.sum <- ym_2017 %>% 
+                  group_by(Year,Country,exp_imp, Unit1, Unit2, hs2) %>% 
+                    summarize(Q2=sum(as.integer(Q2)), Q1=sum(as.integer(Q1)),Value=sum(as.integer(Value))) %>%
+                      select(exp_imp, Year, Country,Unit1, Unit2,Q1, Q2,Value, hs2)
+
+head(ym_2017.sum)
+
+ym_2016.sum <- ym_2016 %>% 
+                  group_by(Year,Country,exp_imp, Unit1, Unit2, hs2) %>% 
+                    summarize(Q2=sum(as.integer(Q2)), Q1=sum(as.integer(Q1)),Value=sum(as.integer(Value))) %>%
+                      select(exp_imp, Year, Country,Unit1, Unit2,Q1, Q2,Value, hs2) 
+head(ym_2016.sum)
+
+# verify the data in ym_2016.sum
+#test.2016 <- ym_2016 %>% filter(hs2=='01', Country=='103') %>% group_by (exp_imp) %>%summarize(Q2=sum(Q2), Q1=sum(Q1))
+
+
+year_1988_2015 <- year_1988_2015 %>% 
+                   rename(Q1=QY1,Q2=QY2,Value=VY) %>% 
+                      mutate(Q1=as.integer(Q1), Q2=as.integer(Q2), Value=as.integer(Value)) %>%
+                        select(exp_imp, Year, Country,Unit1, Unit2, Q1, Q2,Value, hs2)
+  
+head(year_1988_2015)
+
+# combine data
+
+# bind all data 
+all.data <- bind_rows(year_1988_2015,ym_2016.sum,ym_2017.sum)
+
+# read all.data directly
+all.data <- read_csv("C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/all_data.csv")
+head(all.data)
+
+# save as csv 
+write.csv(all.data, file="C:/Users/Shuting/Desktop/Fall 2017/Dataset/japan-trade-statistics/all_data.csv")
+
+# all data with contury information
+
+full.profile <- left_join(all.data, country, by='Country')
+
+# subset data
+
+asia <- full.profile %>% filter (Area=='Asia')
+
+europe <- full.profile %>% filter(Area==c('Central_and_East_Europe_Russia', 'Western_Europe'))
+
+middle_east <- full.profile %>% filter(Area=='Middle_East')
+
+oceania <- full.profile %>% filter(Area=='Oceania')
+
+america <- full.profile %>% filter(Area==c('North_America','Middle_and_South_America'))
+
+africa <- full.profile %>% filter(Area=='Africa')
+
+```
+
+### only analyze asia data year (1988, 1998, 2009, 2016) 
+### asia 1988, 1998, 2009, 2016 export data/import  for social network analysis
+### cosine similarity of diferent matrix  ---> network --> community detection 
+
+```{r export data analysis}
+asia<-asia[,-1]
+year <- c(1988,1998,2009,2016)
+
+# export dataset
+exp.subset <- c()
+for (k in year) {
+
+    asia.exp <- asia %>% 
+                  filter(exp_imp=='1',Year==k) %>% 
+                      select(Country_name,Value, hs2) %>% 
+                         group_by(hs2,Country_name) %>%
+                            summarize(Value=sum(as.integer(Value))) 
+  
+  exp.subset <- c(exp.subset,list(asia.exp))
+}
+remove(asia.exp)
+
+# convert datasets to matrix
+
+# export matrix
+matrix.export <- c()
+for (i in 1:4){
+  exp.matrix <- as.matrix(dcast(exp.subset[[i]],  Country_name ~ hs2, value.var = "Value", fill=0))[,]
+  matrix.export <- c(matrix.export, list(exp.matrix))
+}
+remove(exp.matrix)
+
+
+# calculate the cosine distance between 2 countries based on type of goods and Value
+# define the size of matrix 
+
+# export.data first
+export.data <- c()
+for (i in 1:4) {
+  data <- matrix(, nrow=nrow(matrix.export[[i]]), ncol=nrow(matrix.export[[i]])) 
+  for (m in 1: nrow(matrix.export[[i]])) {
+    for (n in 1: nrow(matrix.export[[i]])){
+      a<- c(as.numeric(matrix.export[[i]][m,-1]))
+      b<- c(as.numeric(matrix.export[[i]][n,-1]))
+      cos<- sum(a*b)/sqrt(sum(a^2)*sum(b^2))  # cosine similiarity
+      data[m,n]<-cos
+    }
+  }
+  export.data <- c(export.data, list(data))
+}
+remove(data)
+
+# export cosine similarity
+export.cos.similarity <- c()
+for (i in 1:4) {
+  cos.sim <-as.matrix(export.data[[i]])
+    colnames(cos.sim) <- (matrix.export[[i]][,1])
+    rownames(cos.sim) <- (matrix.export[[i]][,1])
+export.cos.similarity <- c(export.cos.similarity, list(cos.sim))
+}
+remove(cos.sim)
+```
+
+```{r import data analysis}
+#import datasets
+year <- c(1988,1998,2009,2016)
+imp.subset <- c()
+for (k in year) {
+  asia.imp <- asia %>% 
+    filter(exp_imp=='2') %>% 
+      filter(Year==k) %>%
+        select(Country_name,Value, hs2) %>% 
+         group_by(hs2,Country_name) %>%
+           summarize(Value=sum(as.integer(Value))) 
+imp.subset <- c(imp.subset,list(asia.imp))
+}
+remove(asia.imp)
+
+# import matrix
+matrix.import <- c()
+for (i in 1:4){
+  imp.matrix <- as.matrix(dcast(imp.subset[[i]],  Country_name ~ hs2, value.var = "Value", fill=0))[,]
+  matrix.import <- c(matrix.import, list(imp.matrix))
+}
+remove(imp.matrix)
+
+# import.data
+import.data <- c()
+for (i in 1:4) {
+  data <- matrix(, nrow=nrow(matrix.import[[i]]), ncol=nrow(matrix.import[[i]])) 
+  for (m in 1: nrow(matrix.import[[i]])) {
+    for (n in 1: nrow(matrix.import[[i]])){
+      a<- c(as.numeric(matrix.import[[i]][m,-1]))
+      b<- c(as.numeric(matrix.import[[i]][n,-1]))
+      cos<- sum(a*b)/sqrt(sum(a^2)*sum(b^2))  # cosine similiarity
+      data[m,n]<-cos
+    }
+  }
+  import.data <- c(import.data, list(data))
+}
+remove(data)
+
+# import cosine similarity
+import.cos.similarity <- c()
+for (i in 1:4) {
+  cos.sim <-as.matrix(import.data[[i]])
+  colnames(cos.sim) <- (matrix.import[[i]][,1])
+  rownames(cos.sim) <- (matrix.import[[i]][,1])
+  import.cos.similarity <- c(import.cos.similarity, list(cos.sim))
+}
+remove(cos.sim)
+
+```
+
+# Plotting graphs
+### export data first
+
+```{r export data graphs}
+# added thershold >0.8 cos similarity
+exp.adj_matrix.1988 <- export.cos.similarity[[1]] >0.8
+export.graph.1988  <- graph.adjacency(exp.adj_matrix.1988, mode = c("undirected"),weighted=TRUE)
+export.graph.1988 <- simplify(export.graph.1988, remove.multiple = F, remove.loops = T) 
+
+exp.adj_matrix.1998 <- export.cos.similarity[[2]] >0.8
+export.graph.1998  <- graph.adjacency(exp.adj_matrix.1998, mode = c("undirected"),weighted=TRUE)
+export.graph.1998 <- simplify(export.graph.1998, remove.multiple = F, remove.loops = T) 
+
+exp.adj_matrix.2009 <- export.cos.similarity[[3]] >0.8
+export.graph.2009  <- graph.adjacency(exp.adj_matrix.2009, mode = c("undirected"),weighted=TRUE)
+export.graph.2009 <- simplify(export.graph.2009, remove.multiple = F, remove.loops = T)
+
+exp.adj_matrix.2016 <- export.cos.similarity[[4]] >0.8
+export.graph.2016  <- graph.adjacency(exp.adj_matrix.2016, mode = c("undirected"),weighted=TRUE)
+export.graph.2016 <- simplify(export.graph.2016, remove.multiple = F, remove.loops = T)
+
+
+```
+
+```{r import data graphs}
+imp.adj_matrix.1988 <- import.cos.similarity[[1]] >0.5
+import.graph.1988  <- graph.adjacency(imp.adj_matrix.1988, mode = c("undirected"),weighted=TRUE)
+import.graph.1988 <- simplify(import.graph.1988, remove.multiple = F, remove.loops = T) 
+
+imp.adj_matrix.1998 <- import.cos.similarity[[2]] >0.5
+import.graph.1998  <- graph.adjacency(imp.adj_matrix.1998, mode = c("undirected"),weighted=TRUE)
+import.graph.1998 <- simplify(import.graph.1998, remove.multiple = F, remove.loops = T) 
+
+imp.adj_matrix.2009 <- import.cos.similarity[[3]] >0.5
+import.graph.2009  <- graph.adjacency(imp.adj_matrix.2009, mode = c("undirected"),weighted=TRUE)
+import.graph.2009 <- simplify(import.graph.2009, remove.multiple = F, remove.loops = T)
+
+imp.adj_matrix.2016 <- import.cos.similarity[[4]] >0.5
+import.graph.2016  <- graph.adjacency(imp.adj_matrix.2016, mode = c("undirected"),weighted=TRUE)
+import.graph.2016 <- simplify(import.graph.2016, remove.multiple = F, remove.loops = T)
+
+```
+
+
+
+```{r 1988 plots}
+# plot nodes based on degree centrality, later need to add GDP on vertex size
+plot(export.graph.1988,vertex.label=V(export.graph.1988)$name,vertex.color= degree(export.graph.1988),vertex.size=5,main="Aisa export 1988",edge.arrow.size=0.1,layout=layout.fruchterman.reingold, edge.width=E(export.graph.1988)$weight,asp =9/16)
+
+########Community detection 
+community.exp.1988 = cluster_louvain(export.graph.1988)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.exp.1988$membership
+community.exp.1988$modularity
+
+modularity(community.exp.1988)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(export.graph.1988,
+     vertex.color = community.exp.1988$membership, vertex.size = 5, vertex.color=(degree(export.graph.1988)),mark.groups = by(seq_along(community.exp.1988$membership), community.exp.1988$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa export 1988")
+
+#---------------#---------------#---------------#---------------#---------------#---------------
+# import plot cos similarity > 0.5
+plot(import.graph.1988,vertex.label=V(import.graph.1988)$name,vertex.color=degree(import.graph.1988),vertex.size=5,main="Aisa import 1988, cos similarity>0.5",edge.arrow.size=0.1,layout=layout.fruchterman.reingold, edge.width=E(import.graph.1988)$weight,asp =9/16)
+
+
+########Community detection 
+community.imp.1988 = cluster_louvain(import.graph.1988)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.imp.1988$membership
+community.imp.1988$modularity
+
+modularity(community.imp.1988)
+
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(import.graph.1988,
+     vertex.color = community.imp.1988$membership, vertex.size = 5, vertex.color=(degree(import.graph.1988)),mark.groups = by(seq_along(community.imp.1988$membership), community.imp.1988$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa import 1988")
+
+
+```
+
+```{r 1998 plots}
+######## export Community detection 
+community.exp.1998 = cluster_louvain(export.graph.1998)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.exp.1998$membership
+community.exp.1998$modularity
+
+modularity(community.exp.1998)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(export.graph.1998,
+     vertex.color = community.exp.1998$membership, vertex.size = 5, vertex.color=(degree(export.graph.1998)),mark.groups = by(seq_along(community.exp.1998$membership), community.exp.1998$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa export 1998")
+
+######## import Community detection 
+community.imp.1998 = cluster_louvain(import.graph.1998)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.imp.1998$membership
+community.imp.1998$modularity
+
+modularity(community.imp.1998)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(import.graph.1998,
+     vertex.color = community.imp.1998$membership, vertex.size = 5, vertex.color=(degree(import.graph.1998)),mark.groups = by(seq_along(community.imp.1998$membership), community.imp.1998$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa import 1998")
+```
+
+```{r 2009 plot}
+######## export Community detection 
+community.exp.2009 = cluster_louvain(export.graph.2009)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.exp.2009$membership
+community.exp.2009$modularity
+
+modularity(community.exp.2009)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(export.graph.2009,
+     vertex.color = community.exp.2009$membership, vertex.size = 5, vertex.color=(degree(export.graph.2009)),mark.groups = by(seq_along(community.exp.2009$membership), community.exp.2009$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa export 2009")
+
+######## import Community detection 
+community.imp.2009 = cluster_louvain(import.graph.2009)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.imp.2009$membership
+community.imp.2009$modularity
+
+modularity(community.imp.2009)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(import.graph.2009,
+     vertex.color = community.imp.2009$membership, vertex.size = 5, vertex.color=(degree(import.graph.2009)),mark.groups = by(seq_along(community.imp.2009$membership), community.imp.2009$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa import 2009")
+```
+
+
+```{r 2016 plot}
+######## export Community detection 
+community.exp.2016 = cluster_louvain(export.graph.2016)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.exp.2016$membership
+community.exp.2016$modularity
+
+modularity(community.exp.2016)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(export.graph.2016,
+     vertex.color = community.exp.2016$membership, vertex.size = 5, vertex.color=(degree(export.graph.2016)),mark.groups = by(seq_along(community.exp.2016$membership), community.exp.2016$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa export 2016")
+
+######## import Community detection 
+community.imp.2016 = cluster_louvain(import.graph.2016)  # going from bottom to top, join the individual node to community until reach the max modularity 
+community.imp.2016$membership
+community.imp.2016$modularity
+
+modularity(community.imp.2016)
+set.seed(123) # Since layout.fruchterman.reingold is a random algorithm, set seed can 'fix' the layout
+plot(import.graph.2016,
+     vertex.color = community.imp.2016$membership, vertex.size = 5, vertex.color=(degree(import.graph.2016)),mark.groups = by(seq_along(community.imp.2016$membership), community.imp.2016$membership, invisible),layout=layout.fruchterman.reingold, asp=9/16,main="Aisa import 2016")
+
+```
+
+### exp to China, 1988, 1998 no hs2=93; in 2016, no hs2=02, 84,85
+### exp to North Korea, 1988 to 1998 increasing, 2009 small amount, no exp in 2016
+### exp to 
+
+```{r Insights from plots}
+test <-exp.subset[[1]] %>% filter(Country_name %in% c('Hong_Kong','Singapore','Korea', 'India','North_Korea','Viet_Nam','Philippines','China', 'Maldives','Malaysia','Taiwan')) %>% group_by(Country_name) %>% summarise(Value=sum(Value),hs2=length((hs2)))
+
+test.1 <-exp.subset[[1]] %>% filter(Country_name %in% c('Lao','Thailand','Nepal', 'Bangladesh','Indonesia','Pakistan','Myannar','Cambodia', 'Butan','Sri_Lanka','Macao','Brunei')) %>% group_by(Country_name) %>% summarise(Value=sum(Value),hs2=length((hs2)))
+
+Timor <-exp.subset[[1]] %>% filter(Country_name=='Timor-Leste')
+
+Afghanistan.1988 <- exp.subset[[1]] %>% filter(Country_name=='Afghanistan')
+Afghanistan.1998 <- exp.subset[[2]] %>% filter(Country_name=='Afghanistan')
+Afghanistan.2009 <- exp.subset[[3]] %>% filter(Country_name=='Afghanistan')
+Afghanistan.2016 <- exp.subset[[4]] %>% filter(Country_name=='Afghanistan')
+
+macao.1988 <- imp.subset[[1]] %>% filter(Country_name=='Macao')
+macao.1998 <- imp.subset[[2]] %>% filter(Country_name=='Macao')
+macao.2009 <- imp.subset[[3]] %>% filter(Country_name=='Macao')
+macao.2016 <- imp.subset[[4]] %>% filter(Country_name=='Macao')
+
+korea.1988 <- imp.subset[[1]] %>% filter(Country_name=='Korea')
+
+mongolia <- exp.subset[[1]] %>% filter(Country_name=='Mongolia')
+                                  
+```
+
+
+```{r only look at Machinery category}
+machinery.2016 <- asia %>% filter(hs2=='16', Year==2016) %>% select(Country_name, exp_imp, Value)
+
+library(ggplot2)
+
+ggplot(data=machinery.2016, aes(x=Country_name, y=Value, fill=factor(exp_imp))) + 
+   geom_bar(stat="identity", position=position_dodge())+
+   labs(x="Country", y="Export") +
+  coord_flip()
+  ggtitle("")
+
+```
+
+
+
+```{r North Korean exp/imp analysis}
+n.korea <- asia %>% filter(Country_name=='North_Korea') %>% select(Year, exp_imp, Value, hs2) %>% group_by(hs2, Year, exp_imp) %>% summarize(Value=sum(Value)) 
+
+n.korea.exp.2001 <- n.korea %>% filter(Year==2001, exp_imp=="1") %>% left_join(hs2, by='hs2') %>% select(hs2_name, Value) 
+
+n.korea.imp.2001 <- n.korea %>% filter(Year==2001, exp_imp=="2") %>% left_join(hs2, by='hs2') %>% select(hs2_name, Value) %>% group_by(Value) %>% top_n(20)
+
+ggplot(data = n.korea, aes(x = Year, y = Value, fill = factor(exp_imp))) +
+  geom_bar(stat="identity") +
+  labs(title = "Imports/Exports") +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_text(angle = 90, hjust = 1), 
+        legend.justification = c(0, 1))+
+  ggtitle("Japan-North Korea:Imports/Exports")
+
+ggplot(data = n.korea.exp.2001, aes(x = hs2, y = Value, fill = factor(exp_imp))) +
+  geom_bar(stat="identity") +
+  labs(title = "Imports/Exports") +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_text(angle = 90, hjust = 1), 
+        legend.justification = c(0, 1))+  coord_flip()+
+  ggtitle("Japan-North Korea:Imports/Exports Year 2001")
+
+
+```
+
+
